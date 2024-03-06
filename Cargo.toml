@@ -1,0 +1,22 @@
+[package]
+name = "gluesql_shared_sled_storage"
+authors = ["Sho Kaneko <kanekoshoyu@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+description = "GlueSQL shared sled storage"
+license = "MIT"
+repository = "https://github.com/kanekoshoyu/gluesql_shared_sled_storage"
+
+[dependencies]
+gluesql-core = "0.15.0"
+gluesql_sled_storage = "0.15.0"
+gluesql-utils = "0.15.0"
+async-trait = "0.1"
+iter-enum = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+bincode = "1"
+sled = "0.34"
+async-io = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["sync"] }
