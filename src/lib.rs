@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use gluesql_core::ast::{ColumnDef, IndexOperator, OrderByExpr};
 use gluesql_core::data::{Key, Schema, Value};
-use gluesql_core::error::Result;
+use gluesql_core::error::{Error, Result};
 use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
@@ -11,24 +11,33 @@ use gluesql_sled_storage::SledStorage;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
 
+/// Lock and Notify
+type TransactionState = (Mutex<bool>, Notify);
 #[derive(Clone)]
 pub struct SharedSledStorage {
     database: Arc<RwLock<SledStorage>>,
-    transaction_state: Arc<(Mutex<bool>, Notify)>, // Combined Mutex for state and Notify for signaling
+    transaction_state: Arc<TransactionState>, // Combined Mutex for state and Notify for signaling
+    await_active_transaction: bool, // if set false, collided Transaction::begin() will return error
 }
 
 impl SharedSledStorage {
-    pub fn new(sled_config: Config) -> Self {
+    pub fn new(sled_config: Config, await_active_transaction: bool) -> Self {
         let database = SledStorage::try_from(sled_config).unwrap();
         let database = Arc::new(RwLock::new(database));
         SharedSledStorage {
             database,
             transaction_state: Arc::new((Mutex::new(false), Notify::new())),
+            await_active_transaction,
         }
     }
-    async fn open_transaction(&self) {
+    async fn open_transaction(&self) -> Result<()> {
         let (lock, notify) = &*self.transaction_state;
         let mut in_progress = lock.lock().await;
+        if !self.await_other_transaction && *in_progress {
+            return Err(Error::StorageMsg(
+                "other transaction in progress".to_string(),
+            ));
+        }
         while *in_progress {
             // Drop the lock to allow others to modify the flag.
             drop(in_progress);
@@ -39,6 +48,7 @@ impl SharedSledStorage {
         }
         // Mark the transaction as started
         *in_progress = true;
+        Ok(())
     }
     async fn close_transaction(&self) {
         // Set the transaction as not in progress and notify all waiting.
@@ -89,7 +99,7 @@ impl AlterTable for SharedSledStorage {
 #[async_trait(?Send)]
 impl Transaction for SharedSledStorage {
     async fn begin(&mut self, _autocommit: bool) -> Result<bool> {
-        self.open_transaction().await;
+        self.open_transaction().await?;
         let database = Arc::clone(&self.database);
         let mut database = database.write().await;
         database.begin(_autocommit).await

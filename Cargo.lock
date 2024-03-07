@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "gluesql_shared_sled_storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-io",
  "async-trait",
