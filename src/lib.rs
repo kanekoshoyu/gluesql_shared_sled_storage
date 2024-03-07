@@ -33,7 +33,7 @@ impl SharedSledStorage {
     async fn open_transaction(&self) -> Result<()> {
         let (lock, notify) = &*self.transaction_state;
         let mut in_progress = lock.lock().await;
-        if !self.await_other_transaction && *in_progress {
+        if !self.await_active_transaction && *in_progress {
             return Err(Error::StorageMsg(
                 "other transaction in progress".to_string(),
             ));
