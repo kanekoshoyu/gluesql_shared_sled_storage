@@ -1,9 +1,9 @@
 [package]
 name = "gluesql_shared_sled_storage"
 authors = ["Sho Kaneko <kanekoshoyu@gmail.com>"]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
-description = "GlueSQL shared sled storage"
+description = "GlueSQL shared sled storage, for concurrency and stability"
 license = "MIT"
 repository = "https://github.com/kanekoshoyu/gluesql_shared_sled_storage"
 
