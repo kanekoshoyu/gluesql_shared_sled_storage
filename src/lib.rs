@@ -6,23 +6,25 @@ use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
 };
-use gluesql_sled_storage::sled::Config;
-use gluesql_sled_storage::SledStorage;
+pub use gluesql_sled_storage::sled::Config;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
 
 /// Lock and Notify
 type TransactionState = (Mutex<bool>, Notify);
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SharedSledStorage {
-    database: Arc<RwLock<SledStorage>>,
+    database: Arc<RwLock<gluesql_sled_storage::SledStorage>>,
     transaction_state: Arc<TransactionState>, // Combined Mutex for state and Notify for signaling
     await_active_transaction: bool, // if set false, collided Transaction::begin() will return error
 }
 
 impl SharedSledStorage {
-    pub fn new(sled_config: Config, await_active_transaction: bool) -> Self {
-        let database = SledStorage::try_from(sled_config).unwrap();
+    pub fn new(
+        sled_config: gluesql_sled_storage::sled::Config,
+        await_active_transaction: bool,
+    ) -> Self {
+        let database = gluesql_sled_storage::SledStorage::try_from(sled_config).unwrap();
         let database = Arc::new(RwLock::new(database));
         SharedSledStorage {
             database,
@@ -214,3 +216,22 @@ impl IndexMut for SharedSledStorage {
 impl Metadata for SharedSledStorage {}
 impl CustomFunction for SharedSledStorage {}
 impl CustomFunctionMut for SharedSledStorage {}
+impl Drop for SharedSledStorage {
+    fn drop(&mut self) {
+        // commit before drop so a transaction is closed
+        let _ = futures::executor::block_on(self.commit());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Simple unit test to verify that the `Drop` method is called
+    #[test]
+    fn test_drop() {
+        use super::{Config, SharedSledStorage};
+        {
+            let config = Config::new();
+            SharedSledStorage::new(config, false);
+        }
+    }
+}

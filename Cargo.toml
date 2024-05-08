@@ -17,6 +17,6 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 bincode = "1"
 sled = "0.34"
-async-io = "1"
+async-io = "2.3.2"
 futures = "0.3"
 tokio = { version = "1", features = ["sync"] }
