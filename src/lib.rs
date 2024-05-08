@@ -1,3 +1,6 @@
+pub use gluesql_sled_storage::*;
+pub use sled::*;
+
 use async_trait::async_trait;
 use gluesql_core::ast::{ColumnDef, IndexOperator, OrderByExpr};
 use gluesql_core::data::{Key, Schema, Value};
@@ -6,7 +9,6 @@ use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
 };
-pub use gluesql_sled_storage::sled::*;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -14,16 +16,13 @@ use tokio::sync::{Mutex, Notify, RwLock};
 type TransactionState = (Mutex<bool>, Notify);
 #[derive(Clone, Debug)]
 pub struct SharedSledStorage {
-    database: Arc<RwLock<gluesql_sled_storage::SledStorage>>,
+    database: Arc<RwLock<SledStorage>>,
     transaction_state: Arc<TransactionState>, // Combined Mutex for state and Notify for signaling
     await_active_transaction: bool, // if set false, collided Transaction::begin() will return error
 }
 
 impl SharedSledStorage {
-    pub fn new(
-        sled_config: gluesql_sled_storage::sled::Config,
-        await_active_transaction: bool,
-    ) -> Self {
+    pub fn new(sled_config: Config, await_active_transaction: bool) -> Self {
         let database = gluesql_sled_storage::SledStorage::try_from(sled_config).unwrap();
         let database = Arc::new(RwLock::new(database));
         SharedSledStorage {
