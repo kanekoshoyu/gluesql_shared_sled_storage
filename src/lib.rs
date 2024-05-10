@@ -221,8 +221,13 @@ impl CustomFunction for SharedSledStorage {}
 impl CustomFunctionMut for SharedSledStorage {}
 impl Drop for SharedSledStorage {
     fn drop(&mut self) {
+        let this = self.clone();
         // rollback && commit before drop so a transaction is closed
-        let _ = futures::executor::block_on(self.rollback());
+        let (lock, _) = &*this.transaction_state;
+        let in_progress = futures::executor::block_on(lock.lock());
+        if *in_progress {
+            let _ = futures::executor::block_on(self.rollback());
+        }
         let _ = futures::executor::block_on(self.commit());
     }
 }
