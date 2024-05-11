@@ -40,7 +40,7 @@ impl SharedSledStorage {
 
         match replace(&mut database.state, State::Idle) {
             State::Idle => {}
-            tx @ State::Transaction { txid, .. } => {
+            ref tx @ State::Transaction { txid, .. } => {
                 warn!("recovering from unfinished transaction: {:?}", tx);
                 match database.tree.transaction(
                     |tx| -> ConflictableTransactionResult<eyre::Result<()>> {
