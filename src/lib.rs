@@ -86,7 +86,7 @@ impl SharedSledStorage {
         // Set the transaction as not in progress and notify all waiting.
         let state = &self.state;
         state.in_progress.store(false, Ordering::Release);
-        state.notify.notify_waiters();
+        state.notify.notify_one();
     }
 }
 
