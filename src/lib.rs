@@ -237,12 +237,12 @@ impl IndexMut for SharedSledStorage {
 impl Metadata for SharedSledStorage {}
 impl CustomFunction for SharedSledStorage {}
 impl CustomFunctionMut for SharedSledStorage {}
-impl Drop for SharedSledStorage {
+impl Drop for StorageInner {
     fn drop(&mut self) {
         // if there is an active transaction, rollback
-        if self.state.in_progress.load(Ordering::Acquire) {
+        if self.in_progress.load(Ordering::Acquire) {
             if let Err(err) =
-                futures::executor::block_on(async { self.state.db.write().await.rollback().await })
+                futures::executor::block_on(async { self.db.write().await.rollback().await })
             {
                 warn!("error rolling back transaction: {:?}", err);
             }
