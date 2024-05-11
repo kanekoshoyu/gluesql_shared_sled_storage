@@ -9,186 +9,181 @@ use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
 };
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
+use tracing::warn;
 
 /// Lock and Notify
-type TransactionState = (AtomicBool, Notify);
+#[derive(Debug)]
+struct StorageInner {
+    db: RwLock<SledStorage>,
+    in_progress: AtomicBool,
+    notify: Notify,
+}
+
 #[derive(Clone, Debug)]
 pub struct SharedSledStorage {
-    database: Arc<RwLock<SledStorage>>,
-    transaction_state: Arc<TransactionState>, // Combined Mutex for state and Notify for signaling
+    state: Arc<StorageInner>, // Combined Mutex for state and Notify for signaling
     await_active_transaction: bool, // if set false, collided Transaction::begin() will return error
 }
 
 impl SharedSledStorage {
     pub fn new(sled_config: Config, await_active_transaction: bool) -> Self {
         let database = gluesql_sled_storage::SledStorage::try_from(sled_config).unwrap();
-        let database = Arc::new(RwLock::new(database));
+
         SharedSledStorage {
-            database,
-            transaction_state: Arc::new((false.into(), Notify::new())),
+            state: Arc::new(StorageInner {
+                db: RwLock::new(database),
+                in_progress: AtomicBool::new(false),
+                notify: Notify::new(),
+            }),
             await_active_transaction,
         }
     }
     async fn open_transaction(&self) -> GlueResult<()> {
-        let (in_progress, notify) = &*self.transaction_state;
-        if !self.await_active_transaction && in_progress.load(std::sync::atomic::Ordering::Relaxed)
-        {
+        let state = &self.state;
+        if !self.await_active_transaction && state.in_progress.load(Ordering::Acquire) {
             return Err(GlueError::StorageMsg(
                 "other transaction in progress".to_string(),
             ));
         }
-        while in_progress.load(std::sync::atomic::Ordering::Relaxed) {
+        while state
+            .in_progress
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+            .is_err()
+        {
             // Await notification that the transaction has completed.
-            notify.notified().await;
+            state.notify.notified().await;
         }
-        // Mark the transaction as started
-        in_progress.store(true, std::sync::atomic::Ordering::Relaxed);
+
         Ok(())
     }
     async fn close_transaction(&self) {
         // Set the transaction as not in progress and notify all waiting.
-        let (in_progress, notify) = &*self.transaction_state;
-        in_progress.store(false, std::sync::atomic::Ordering::Relaxed);
-        notify.notify_waiters();
+        let state = &self.state;
+        state.in_progress.store(false, Ordering::Release);
+        state.notify.notify_waiters();
     }
 }
 
 #[async_trait(?Send)]
 impl AlterTable for SharedSledStorage {
-    async fn rename_schema(&mut self, _table_name: &str, _new_table_name: &str) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.rename_schema(_table_name, _new_table_name).await
+    async fn rename_schema(&mut self, table_name: &str, new_table_name: &str) -> GlueResult<()> {
+        let mut database = self.state.db.write().await;
+        database.rename_schema(table_name, new_table_name).await
     }
     async fn rename_column(
         &mut self,
-        _table_name: &str,
-        _old_column_name: &str,
-        _new_column_name: &str,
+        table_name: &str,
+        old_column_name: &str,
+        new_column_name: &str,
     ) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
+        let mut database = self.state.db.write().await;
         database
-            .rename_column(_table_name, _old_column_name, _new_column_name)
+            .rename_column(table_name, old_column_name, new_column_name)
             .await
     }
-    async fn add_column(&mut self, _table_name: &str, _column_def: &ColumnDef) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.add_column(_table_name, _column_def).await
+    async fn add_column(&mut self, table_name: &str, column_def: &ColumnDef) -> GlueResult<()> {
+        let mut database = self.state.db.write().await;
+        database.add_column(table_name, column_def).await
     }
     async fn drop_column(
         &mut self,
-        _table_name: &str,
-        _column_name: &str,
-        _if_exists: bool,
+        table_name: &str,
+        column_name: &str,
+        if_exists: bool,
     ) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
+        let mut database = self.state.db.write().await;
         database
-            .drop_column(_table_name, _column_name, _if_exists)
+            .drop_column(table_name, column_name, if_exists)
             .await
     }
 }
 #[async_trait(?Send)]
 impl Transaction for SharedSledStorage {
-    async fn begin(&mut self, _autocommit: bool) -> GlueResult<bool> {
+    async fn begin(&mut self, autocommit: bool) -> GlueResult<bool> {
         self.open_transaction().await?;
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.begin(_autocommit).await
+        self.state.db.write().await.begin(autocommit).await
     }
     async fn rollback(&mut self) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        self.close_transaction().await;
-        database.rollback().await
+        self.state.db.write().await.rollback().await
     }
     async fn commit(&mut self) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
+        self.state.db.write().await.commit().await?;
         self.close_transaction().await;
-        database.commit().await
+        Ok(())
     }
 }
 /// By implementing `Store` trait, you can run `SELECT` query.
 #[async_trait(?Send)]
 impl Store for SharedSledStorage {
-    async fn fetch_schema(&self, _table_name: &str) -> GlueResult<Option<Schema>> {
-        let database = Arc::clone(&self.database);
-        let database = database.read().await;
-        database.fetch_schema(_table_name).await
+    async fn fetch_schema(&self, table_name: &str) -> GlueResult<Option<Schema>> {
+        self.state.db.read().await.fetch_schema(table_name).await
     }
     async fn fetch_all_schemas(&self) -> GlueResult<Vec<Schema>> {
-        let database = Arc::clone(&self.database);
-        let database = database.read().await;
-        database.fetch_all_schemas().await
+        self.state.db.read().await.fetch_all_schemas().await
     }
 
-    async fn fetch_data(&self, _table_name: &str, _key: &Key) -> GlueResult<Option<DataRow>> {
-        let database = Arc::clone(&self.database);
-        let database = database.read().await;
-        database.fetch_data(_table_name, _key).await
+    async fn fetch_data(&self, table_name: &str, key: &Key) -> GlueResult<Option<DataRow>> {
+        self.state.db.read().await.fetch_data(table_name, key).await
     }
 
-    async fn scan_data(&self, _table_name: &str) -> GlueResult<RowIter> {
-        let database = Arc::clone(&self.database);
-        let database = database.read().await;
-        database.scan_data(_table_name).await
+    async fn scan_data(&self, table_name: &str) -> GlueResult<RowIter> {
+        self.state.db.read().await.scan_data(table_name).await
     }
 }
 #[async_trait(?Send)]
 impl StoreMut for SharedSledStorage {
-    async fn insert_schema(&mut self, _schema: &Schema) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.insert_schema(_schema).await
+    async fn insert_schema(&mut self, schema: &Schema) -> GlueResult<()> {
+        self.state.db.write().await.insert_schema(schema).await
     }
 
-    async fn delete_schema(&mut self, _table_name: &str) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.delete_schema(_table_name).await
+    async fn delete_schema(&mut self, table_name: &str) -> GlueResult<()> {
+        self.state.db.write().await.delete_schema(table_name).await
     }
 
-    async fn append_data(&mut self, _table_name: &str, _rows: Vec<DataRow>) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.append_data(_table_name, _rows).await
+    async fn append_data(&mut self, table_name: &str, rows: Vec<DataRow>) -> GlueResult<()> {
+        self.state
+            .db
+            .write()
+            .await
+            .append_data(table_name, rows)
+            .await
     }
 
-    async fn insert_data(
-        &mut self,
-        _table_name: &str,
-        _rows: Vec<(Key, DataRow)>,
-    ) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.insert_data(_table_name, _rows).await
+    async fn insert_data(&mut self, table_name: &str, rows: Vec<(Key, DataRow)>) -> GlueResult<()> {
+        self.state
+            .db
+            .write()
+            .await
+            .insert_data(table_name, rows)
+            .await
     }
 
-    async fn delete_data(&mut self, _table_name: &str, _keys: Vec<Key>) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.delete_data(_table_name, _keys).await
+    async fn delete_data(&mut self, table_name: &str, keys: Vec<Key>) -> GlueResult<()> {
+        self.state
+            .db
+            .write()
+            .await
+            .delete_data(table_name, keys)
+            .await
     }
 }
 #[async_trait(?Send)]
 impl Index for SharedSledStorage {
     async fn scan_indexed_data(
         &self,
-        _table_name: &str,
-        _index_name: &str,
-        _asc: Option<bool>,
-        _cmp_value: Option<(&IndexOperator, Value)>,
+        table_name: &str,
+        index_name: &str,
+        asc: Option<bool>,
+        cmp_value: Option<(&IndexOperator, Value)>,
     ) -> GlueResult<RowIter> {
-        let database = Arc::clone(&self.database);
-        let database = database.read().await;
-        database
-            .scan_indexed_data(_table_name, _index_name, _asc, _cmp_value)
+        self.state
+            .db
+            .read()
+            .await
+            .scan_indexed_data(table_name, index_name, asc, cmp_value)
             .await
     }
 }
@@ -196,20 +191,24 @@ impl Index for SharedSledStorage {
 impl IndexMut for SharedSledStorage {
     async fn create_index(
         &mut self,
-        _table_name: &str,
-        _index_name: &str,
-        _column: &OrderByExpr,
+        table_name: &str,
+        index_name: &str,
+        column: &OrderByExpr,
     ) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database
-            .create_index(_table_name, _index_name, _column)
+        self.state
+            .db
+            .write()
+            .await
+            .create_index(table_name, index_name, column)
             .await
     }
-    async fn drop_index(&mut self, _table_name: &str, _index_name: &str) -> GlueResult<()> {
-        let database = Arc::clone(&self.database);
-        let mut database = database.write().await;
-        database.drop_index(_table_name, _index_name).await
+    async fn drop_index(&mut self, table_name: &str, index_name: &str) -> GlueResult<()> {
+        self.state
+            .db
+            .write()
+            .await
+            .drop_index(table_name, index_name)
+            .await
     }
 }
 impl Metadata for SharedSledStorage {}
@@ -217,24 +216,28 @@ impl CustomFunction for SharedSledStorage {}
 impl CustomFunctionMut for SharedSledStorage {}
 impl Drop for SharedSledStorage {
     fn drop(&mut self) {
-        // rollback && commit before drop so a transaction is closed
-        let (in_progress, _) = &*self.transaction_state.clone();
-        if in_progress.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = futures::executor::block_on(self.rollback());
+        // if there is an active transaction, rollback
+        if self.state.in_progress.load(Ordering::Acquire) {
+            if let Err(err) =
+                futures::executor::block_on(async { self.state.db.write().await.rollback().await })
+            {
+                warn!("error rolling back transaction: {:?}", err);
+            }
         }
-        let _ = futures::executor::block_on(self.commit());
     }
 }
 
 #[cfg(test)]
 mod tests {
     /// Simple unit test to verify that the `Drop` method is called
-    #[test]
-    fn test_drop() {
+    #[tokio::test]
+    async fn test_drop() {
         use super::{Config, SharedSledStorage};
         {
             let config = Config::new();
-            SharedSledStorage::new(config, false);
+            let storage = SharedSledStorage::new(config, false);
+            storage.open_transaction().await.unwrap();
         }
+        println!("SharedSledStorage instance dropped successfully!")
     }
 }
