@@ -1,5 +1,6 @@
 pub use gluesql_sled_storage::*;
 pub use sled::*;
+use std::mem::replace;
 
 use async_trait::async_trait;
 use gluesql_core::ast::{ColumnDef, IndexOperator, OrderByExpr};
@@ -30,8 +31,14 @@ pub struct SharedSledStorage {
 
 impl SharedSledStorage {
     pub fn new(sled_config: Config, await_active_transaction: bool) -> Self {
-        let database = gluesql_sled_storage::SledStorage::try_from(sled_config).unwrap();
+        let mut database = gluesql_sled_storage::SledStorage::try_from(sled_config).unwrap();
 
+        match replace(&mut database.state, State::Idle) {
+            State::Idle => {}
+            transaction => {
+                warn!("recovering from unfinished transaction: {:?}", transaction)
+            }
+        }
         SharedSledStorage {
             state: Arc::new(StorageInner {
                 db: RwLock::new(database),

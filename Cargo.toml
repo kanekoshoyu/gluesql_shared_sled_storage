@@ -24,3 +24,9 @@ tracing = "0.1.40"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+criterion = "0.5.1"
+
+
+[[bench]]
+name = "bench_corectness"
+harness = false
