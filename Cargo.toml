@@ -12,7 +12,6 @@ gluesql-core = "0.15.0"
 gluesql_sled_storage = "0.15.0"
 gluesql-utils = "0.15.0"
 async-trait = "0.1"
-iter-enum = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 bincode = "1"
@@ -21,6 +20,7 @@ async-io = "2.3.2"
 futures = "0.3"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1.40"
+eyre = "0.6.12"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
