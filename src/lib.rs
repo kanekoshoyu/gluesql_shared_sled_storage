@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gluesql_core::ast::{ColumnDef, IndexOperator, OrderByExpr};
 use gluesql_core::data::{Key, Schema, Value};
-use gluesql_core::error::{Error as GlueError, Result as GlueResult};
+use gluesql_core::error::Result as GlueResult;
 use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
@@ -31,11 +31,10 @@ struct StorageInner {
 #[derive(Clone, Debug)]
 pub struct SharedSledStorage {
     state: Arc<StorageInner>, // Combined Mutex for state and Notify for signaling
-    await_active_transaction: bool, // if set false, collided Transaction::begin() will return error
 }
 
 impl SharedSledStorage {
-    pub fn new(sled_config: Config, await_active_transaction: bool) -> eyre::Result<Self> {
+    pub fn new(sled_config: Config) -> eyre::Result<Self> {
         let mut database = gluesql_sled_storage::SledStorage::try_from(sled_config)?;
 
         match replace(&mut database.state, State::Idle) {
@@ -66,17 +65,12 @@ impl SharedSledStorage {
                 in_progress: AtomicBool::new(false),
                 notify: Notify::new(),
             }),
-            await_active_transaction,
         };
         Ok(this)
     }
     async fn open_transaction(&self) -> GlueResult<()> {
         let state = &self.state;
-        if !self.await_active_transaction && state.in_progress.load(Ordering::Acquire) {
-            return Err(GlueError::StorageMsg(
-                "other transaction in progress".to_string(),
-            ));
-        }
+
         while state
             .in_progress
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
@@ -268,7 +262,7 @@ mod tests {
         use super::{Config, SharedSledStorage};
         {
             let config = Config::new();
-            let mut storage = SharedSledStorage::new(config, false).unwrap();
+            let mut storage = SharedSledStorage::new(config).unwrap();
             storage.begin(false).await.unwrap();
         }
         println!("SharedSledStorage instance dropped successfully!")
@@ -277,12 +271,12 @@ mod tests {
     async fn test_lock_and_recovery() {
         use super::{Config, SharedSledStorage};
         let config = Config::new();
-        let mut storage = SharedSledStorage::new(config, false).unwrap();
+        let mut storage = SharedSledStorage::new(config).unwrap();
         storage.begin(false).await.unwrap();
         storage.state.in_progress.store(true, Ordering::Release);
         drop(storage);
         let config = Config::new();
-        let storage = SharedSledStorage::new(config, false).unwrap();
+        let storage = SharedSledStorage::new(config).unwrap();
         drop(storage)
     }
 }
