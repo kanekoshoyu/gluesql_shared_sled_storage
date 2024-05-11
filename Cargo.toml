@@ -28,5 +28,5 @@ criterion = "0.5.1"
 
 
 [[bench]]
-name = "bench_corectness"
+name = "bench_correctness"
 harness = false

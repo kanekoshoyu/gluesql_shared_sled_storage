@@ -236,14 +236,16 @@ impl Drop for SharedSledStorage {
 
 #[cfg(test)]
 mod tests {
+    use gluesql_core::store::Transaction;
+
     /// Simple unit test to verify that the `Drop` method is called
     #[tokio::test]
     async fn test_drop() {
         use super::{Config, SharedSledStorage};
         {
             let config = Config::new();
-            let storage = SharedSledStorage::new(config, false);
-            storage.open_transaction().await.unwrap();
+            let mut storage = SharedSledStorage::new(config, false);
+            storage.begin(false).await.unwrap();
         }
         println!("SharedSledStorage instance dropped successfully!")
     }
