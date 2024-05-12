@@ -25,6 +25,7 @@ eyre = "0.6"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 criterion = "0.5.1"
+gluesql = "0.15.0"
 
 
 [[bench]]

@@ -130,7 +130,9 @@ impl Transaction for SharedSledStorage {
         self.state.db.write().await.begin(autocommit).await
     }
     async fn rollback(&mut self) -> GlueResult<()> {
-        self.state.db.write().await.rollback().await
+        self.state.db.write().await.rollback().await?;
+        self.close_transaction().await;
+        Ok(())
     }
     async fn commit(&mut self) -> GlueResult<()> {
         self.state.db.write().await.commit().await?;
