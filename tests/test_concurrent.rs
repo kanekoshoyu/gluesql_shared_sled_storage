@@ -14,7 +14,7 @@ async fn get_length(table: &mut Glue<SharedSledStorage>) -> Result<usize> {
 async fn test_concurrent_access_local_thread() -> Result<()> {
     let tmp_dir = std::env::temp_dir().join("temp_db");
     let tmp_db_config = Config::new().path(tmp_dir).cache_capacity(256);
-    let db = SharedSledStorage::new(tmp_db_config)?;
+    let db = SharedSledStorage::new(tmp_db_config, true)?;
     let mut table = Glue::new(db.clone());
     let _ = table.execute("CREATE TABLE t (a INT);").await;
     let len = get_length(&mut table).await?;
@@ -61,10 +61,10 @@ async fn test_concurrent_access_local_thread() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_access() -> Result<()> {
-    let tmp_dir = std::env::temp_dir().join("temp_db_concurrent");
+    let tmp_dir = std::env::temp_dir().join("temp_db_concurrent_access");
     let tmp_db_config = Config::new().path(tmp_dir).cache_capacity(256);
-    let db = SharedSledStorage::new(tmp_db_config)?;
-    let total = 100;
+    let db = SharedSledStorage::new(tmp_db_config, true)?;
+    let total = 150;
 
     let mut table = Glue::new(db.clone());
     let _ = table.execute("CREATE TABLE t (a INT);").await;
@@ -88,7 +88,7 @@ async fn test_concurrent_access() -> Result<()> {
                     .await
                 {
                     Ok(_) => {
-                        // println!("Inserted {}", i)
+                        println!("Inserted {}", i)
                     }
                     Err(e) => panic!("error inserting: {e}"),
                 };

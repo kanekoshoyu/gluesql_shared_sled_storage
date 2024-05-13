@@ -1,11 +1,7 @@
-use std::mem::replace;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use gluesql_core::ast::{ColumnDef, IndexOperator, OrderByExpr};
 use gluesql_core::data::{Key, Schema, Value};
-use gluesql_core::error::Result as GlueResult;
+use gluesql_core::error::{Error as GlueError, Result as GlueResult};
 use gluesql_core::store::{
     AlterTable, CustomFunction, CustomFunctionMut, DataRow, Index, IndexMut, Metadata, RowIter,
     Store, StoreMut, Transaction,
@@ -13,6 +9,9 @@ use gluesql_core::store::{
 pub use gluesql_sled_storage::*;
 use sled::transaction::ConflictableTransactionResult;
 pub use sled::*;
+use std::mem::replace;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tracing::warn;
 
@@ -31,10 +30,11 @@ struct StorageInner {
 #[derive(Clone, Debug)]
 pub struct SharedSledStorage {
     state: Arc<StorageInner>, // Combined Mutex for state and Notify for signaling
+    await_active_transaction: bool,
 }
 
 impl SharedSledStorage {
-    pub fn new(sled_config: Config) -> eyre::Result<Self> {
+    pub fn new(sled_config: Config, await_active_transaction: bool) -> eyre::Result<Self> {
         let mut database = gluesql_sled_storage::SledStorage::try_from(sled_config)?;
 
         match replace(&mut database.state, State::Idle) {
@@ -65,6 +65,7 @@ impl SharedSledStorage {
                 in_progress: AtomicBool::new(false),
                 notify: Notify::new(),
             }),
+            await_active_transaction,
         };
         Ok(this)
     }
@@ -76,6 +77,9 @@ impl SharedSledStorage {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
+            if !self.await_active_transaction {
+                return GlueResult::Err(GlueError::StorageMsg("transaction in progress".into()));
+            }
             // Await notification that the transaction has completed.
             state.notify.notified().await;
         }
@@ -265,7 +269,7 @@ mod tests {
         {
             let tmp_dir = std::env::temp_dir().join("test_drop");
             let config = Config::new().path(tmp_dir);
-            let mut storage = SharedSledStorage::new(config).unwrap();
+            let mut storage = SharedSledStorage::new(config, true).unwrap();
             storage.begin(false).await.unwrap();
         }
         println!("SharedSledStorage instance dropped successfully!")
@@ -275,12 +279,33 @@ mod tests {
         use super::{Config, SharedSledStorage};
         let tmp_dir = std::env::temp_dir().join("test_lock_and_recovery");
         let config = Config::new().path(tmp_dir);
-        let mut storage = SharedSledStorage::new(config).unwrap();
+        let mut storage = SharedSledStorage::new(config, true).unwrap();
         storage.begin(false).await.unwrap();
         storage.state.in_progress.store(true, Ordering::Release);
         drop(storage);
         let config = Config::new();
-        let storage = SharedSledStorage::new(config).unwrap();
+        let storage = SharedSledStorage::new(config, true).unwrap();
         drop(storage)
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_acess_drop() -> eyre::Result<()> {
+        use super::{Config, SharedSledStorage};
+        let tmp_dir = std::env::temp_dir().join("temp_db_drop");
+        let tmp_db_config = Config::new().path(tmp_dir).cache_capacity(256);
+        {
+            let db = SharedSledStorage::new(tmp_db_config.clone(), false)?;
+            let mut table = gluesql::prelude::Glue::new(db.clone());
+            let _ = table.execute("CREATE TABLE t (a INT);").await;
+            assert!(table.storage.open_transaction().await.is_ok());
+        }
+        {
+            let db = SharedSledStorage::new(tmp_db_config.clone(), false)?;
+            let mut table = gluesql::prelude::Glue::new(db.clone());
+            let _ = table.execute("CREATE TABLE t (a INT);").await;
+            assert!(table.storage.open_transaction().await.is_ok());
+        }
+
+        Ok(())
     }
 }
