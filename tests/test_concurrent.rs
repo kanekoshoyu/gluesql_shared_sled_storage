@@ -61,7 +61,7 @@ async fn test_concurrent_access_local_thread() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_access() -> Result<()> {
-    let tmp_dir = std::env::temp_dir().join("temp_db_1");
+    let tmp_dir = std::env::temp_dir().join("temp_db_concurrent");
     let tmp_db_config = Config::new().path(tmp_dir).cache_capacity(256);
     let db = SharedSledStorage::new(tmp_db_config)?;
     let total = 100;
@@ -83,10 +83,15 @@ async fn test_concurrent_access() -> Result<()> {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let mut table = Glue::new(db_clone);
             rt.block_on(async {
-                table
+                let _ = match table
                     .execute(format!("INSERT INTO t (a) VALUES ({});", i).as_str())
                     .await
-                    .unwrap()
+                {
+                    Ok(_) => {
+                        // println!("Inserted {}", i)
+                    }
+                    Err(e) => panic!("error inserting: {e}"),
+                };
             });
         });
         handles.push(handle);
@@ -99,13 +104,15 @@ async fn test_concurrent_access() -> Result<()> {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let mut table = Glue::new(db_clone);
             rt.block_on(async {
-                let res = table.execute("SELECT * FROM t;").await.unwrap();
-                match res.into_iter().next().unwrap() {
-                    Payload::Select { labels: _, rows } => {
-                        println!("Rows: {}", rows.len());
-                    }
-                    _ => unreachable!(),
-                }
+                match table.execute("SELECT * FROM t;").await {
+                    Ok(res) => match res.into_iter().next().unwrap() {
+                        Payload::Select { labels: _, rows: _ } => {
+                            // println!("Rows: {}", rows.len());
+                        }
+                        _ => unreachable!(),
+                    },
+                    Err(e) => panic!("error slecting: {e}"),
+                };
             });
         });
         handles.push(handle);
@@ -113,7 +120,10 @@ async fn test_concurrent_access() -> Result<()> {
 
     // Wait for all threads to complete
     for handle in handles {
-        handle.join().unwrap();
+        match handle.join() {
+            Ok(_) => {}
+            Err(e) => panic!("handle error {e:?}"),
+        }
     }
 
     Ok(())
