@@ -263,7 +263,8 @@ mod tests {
     async fn test_drop() {
         use super::{Config, SharedSledStorage};
         {
-            let config = Config::new();
+            let tmp_dir = std::env::temp_dir().join("test_drop");
+            let config = Config::new().path(tmp_dir);
             let mut storage = SharedSledStorage::new(config).unwrap();
             storage.begin(false).await.unwrap();
         }
@@ -272,7 +273,8 @@ mod tests {
     #[tokio::test]
     async fn test_lock_and_recovery() {
         use super::{Config, SharedSledStorage};
-        let config = Config::new();
+        let tmp_dir = std::env::temp_dir().join("test_lock_and_recovery");
+        let config = Config::new().path(tmp_dir);
         let mut storage = SharedSledStorage::new(config).unwrap();
         storage.begin(false).await.unwrap();
         storage.state.in_progress.store(true, Ordering::Release);
